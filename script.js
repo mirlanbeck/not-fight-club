@@ -344,15 +344,15 @@ function renderLogList() {
   const items = currentBattle.log.slice().reverse();
   box.innerHTML = items
     .map((e) => {
-      const WHO = e.attacker === "PLAYER" ? "ИГРОК" : "ВРАГ";
-      const WHOM = e.target === "ENEMY" ? "ВРАГА" : "ИГРОКА";
+      const WHO = e.attacker === "PLAYER" ? "Player" : "Enemy";
+      const WHOM = e.target === "ENEMY" ? "Enemy's" : "Player's";
       const flags = `${e.critical ? " КРИТ" : ""}${e.blocked ? " BLOCK" : ""}`;
       return `
       <div class="log-item${e.critical ? " is-crit" : ""}${
         e.blocked ? " is-blocked" : ""
       }">
-        <span class="who">${WHO}</span> атаковал <span class="whom">${WHOM}</span> в
-        <span class="zone">${e.zone}</span> → урон: <span class="damage">${
+        <span class="who">${WHO}</span> attacked <span class="whom">${WHOM}</span>
+        <span class="zone">${e.zone}</span> → damage: <span class="damage">${
         e.damage
       }</span>
         <span class="flags">${flags}</span> 
@@ -394,7 +394,7 @@ function renderRegister() {
     const name = (nameInput.value || "").trim();
     if (!isValidName(name)) {
       nameError.textContent =
-        "Имя должно быть от 2х до 20 символов (буквы/цифры/пробел/дефис)";
+        "Name length should be not less than 2 symbols and no more than 20 symbols (letters/numbers/space/hyphen)";
       nameInput.focus();
       return;
     }
