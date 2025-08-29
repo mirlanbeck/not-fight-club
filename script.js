@@ -7,6 +7,9 @@ const LS_KEYS = {
   hero: "player:hero", // hero id (per-hero stats)
   wins: "player:wins",
   losses: "player:losses",
+  // --- Persistence for battle state:
+  battle: "battle:state",
+  lastEnemy: "battle:lastEnemyId",
 };
 
 /* ===================== Getters / helpers ===================== */
@@ -20,6 +23,10 @@ function restartCycle() {
   localStorage.removeItem(LS_KEYS.name);
   localStorage.removeItem(LS_KEYS.avatar);
   localStorage.removeItem(LS_KEYS.hero);
+  // clear saved battle
+  localStorage.removeItem(LS_KEYS.battle);
+  localStorage.removeItem(LS_KEYS.lastEnemy);
+
   currentBattle = null;
   window.location.hash = "#/register";
   updateNewBattleLinkVisibility();
@@ -29,7 +36,6 @@ function restartCycle() {
 function setBtnEnabled(btn, enabled) {
   btn.disabled = !enabled;
   btn.setAttribute("aria-disabled", String(!enabled));
-  // subtle visual hint
   btn.style.opacity = enabled ? "1" : "0.6";
   btn.style.cursor = enabled ? "pointer" : "not-allowed";
   btn.style.filter = enabled ? "" : "grayscale(0.2)";
@@ -115,8 +121,44 @@ const ENEMIES = [
   },
 ];
 
+/* ===================== Battle state (RAM) ===================== */
 let currentBattle = null;
 let lastEnemyId = null;
+
+/* ===================== Battle persistence (LocalStorage) ===================== */
+function saveBattle() {
+  if (!currentBattle) {
+    localStorage.removeItem(LS_KEYS.battle);
+    localStorage.removeItem(LS_KEYS.lastEnemy);
+    return;
+  }
+  const snapshot = {
+    zones: Array.isArray(currentBattle.zones) ? [...currentBattle.zones] : [],
+    player: { ...currentBattle.player },
+    enemy: { ...currentBattle.enemy },
+    log: Array.isArray(currentBattle.log) ? [...currentBattle.log] : [],
+    over: !!currentBattle.over,
+  };
+  try {
+    localStorage.setItem(LS_KEYS.battle, JSON.stringify(snapshot));
+    if (lastEnemyId) localStorage.setItem(LS_KEYS.lastEnemy, lastEnemyId);
+  } catch (e) {
+    console.warn("Failed to save battle:", e);
+  }
+}
+
+function loadBattle() {
+  const raw = localStorage.getItem(LS_KEYS.battle);
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj?.player || !obj?.enemy || !Array.isArray(obj.zones)) return null;
+    return obj;
+  } catch {
+    localStorage.removeItem(LS_KEYS.battle);
+    return null;
+  }
+}
 
 /* ===================== Header “New battle” link visibility ===================== */
 function updateNewBattleLinkVisibility() {
@@ -167,6 +209,7 @@ function initBattle() {
   };
 
   lastEnemyId = enemy.id;
+  saveBattle();
   updateNewBattleLinkVisibility();
 }
 
@@ -248,9 +291,13 @@ function doRound(playerChoice) {
   player.hpCurrent = Math.max(0, player.hpCurrent - dmgToPlayer);
 
   B.log.push(...events);
-  if (enemy.hpCurrent === 0) return "WIN";
-  if (player.hpCurrent === 0) return "LOSE";
-  return "NONE";
+
+  let result = "NONE";
+  if (enemy.hpCurrent === 0) result = "WIN";
+  if (player.hpCurrent === 0) result = result === "WIN" ? "WIN" : "LOSE";
+
+  saveBattle();
+  return result;
 }
 
 /* ===================== Modals ===================== */
@@ -311,7 +358,10 @@ function finishBattle(result) {
     localStorage.setItem(LS_KEYS.losses, String(losses));
   }
 
-  if (currentBattle) currentBattle.over = true;
+  if (currentBattle) {
+    currentBattle.over = true;
+    saveBattle();
+  }
   updateNewBattleLinkVisibility();
 
   const overlay = document.createElement("div");
@@ -346,7 +396,7 @@ function renderLogList() {
     .map((e) => {
       const WHO = e.attacker === "PLAYER" ? "Player" : "Enemy";
       const WHOM = e.target === "ENEMY" ? "Enemy's" : "Player's";
-      const flags = `${e.critical ? " КРИТ" : ""}${e.blocked ? " BLOCK" : ""}`;
+      const flags = `${e.critical ? " CRIT" : ""}${e.blocked ? " BLOCK" : ""}`;
       return `
       <div class="log-item${e.critical ? " is-crit" : ""}${
         e.blocked ? " is-blocked" : ""
@@ -356,8 +406,7 @@ function renderLogList() {
         e.damage
       }</span>
         <span class="flags">${flags}</span> 
-      </div>
-    `;
+      </div>`;
     })
     .join("");
 }
@@ -394,7 +443,7 @@ function renderRegister() {
     const name = (nameInput.value || "").trim();
     if (!isValidName(name)) {
       nameError.textContent =
-        "Name length should be not less than 2 symbols and no more than 20 symbols (letters/numbers/space/hyphen)";
+        "Name length should be 2–20 symbols (letters/numbers/space/hyphen).";
       nameInput.focus();
       return;
     }
@@ -465,7 +514,13 @@ function renderAvatar() {
     localStorage.setItem(LS_KEYS.hero, pickedHeroId);
     localStorage.setItem(LS_KEYS.avatar, hero.src);
 
-    // ⬇️ Immediately start a battle and go to /battle (fixes the Home loop)
+    // IMPORTANT: Do NOT start a new battle if one is already active.
+    if (currentBattle && !currentBattle.over) {
+      // just go back to the ongoing battle
+      window.location.hash = "#/battle";
+      return;
+    }
+    // no active battle → start a fresh one
     initBattle();
     window.location.hash = "#/battle";
   });
@@ -502,6 +557,7 @@ function renderHome() {
       window.location.hash = "#/avatar";
       return;
     }
+
     // if a battle is already active, resume it; else start a new one
     if (currentBattle && !currentBattle.over) {
       window.location.hash = "#/battle";
@@ -553,25 +609,25 @@ function renderCharacter() {
           <section class="stats" aria-label="Overall stats">
             <h3 style="margin:0 0 8px 0;">Stats</h3>
             <ul style="list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:8px;">
-              <li style="padding:10px;border-radius:10px;background:#fafafa;">🏆 <strong>Wins:</strong> ${wins}</li>
-              <li style="padding:10px;border-radius:10px;background:#fafafa;">💀 <strong>Losses:</strong> ${losses}</li>
-              <li style="padding:10px;border-radius:10px;background:#fafafa;">📈 <strong>Win rate:</strong> ${winRate}%</li>
+              <li style="padding:10px;border-radius:10px;background:#fafafa;color:#111;">🏆 <strong>Wins:</strong> ${wins}</li>
+              <li style="padding:10px;border-radius:10px;background:#fafafa;color:#111;">💀 <strong>Losses:</strong> ${losses}</li>
+              <li style="padding:10px;border-radius:10px;background:#fafafa;color:#111;">📈 <strong>Win rate:</strong> ${winRate}%</li>
             </ul>
           </section>
 
           <section class="hero-base" aria-label="Current hero base stats">
             <h3 style="margin:12px 0 8px 0;">Hero base</h3>
             <ul style="list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(4, minmax(0, 1fr));gap:8px;">
-              <li style="padding:10px;border-radius:10px;background:#f5f5f5;">❤️ HP: ${
+              <li style="padding:10px;border-radius:10px;background:#f5f5f5;color:#111;">❤️ HP: ${
                 base.hp
               }</li>
-              <li style="padding:10px;border-radius:10px;background:#f5f5f5;">🗡️ DMG: ${
+              <li style="padding:10px;border-radius:10px;background:#f5f5f5;color:#111;">🗡️ DMG: ${
                 base.dmg
               }</li>
-              <li style="padding:10px;border-radius:10px;background:#f5f5f5;">🎯 Crit: ${(
+              <li style="padding:10px;border-radius:10px;background:#f5f5f5;color:#111;">🎯 Crit: ${(
                 Number(base.critChance) * 100
               ).toFixed(0)}%</li>
-              <li style="padding:10px;border-radius:10px;background:#f5f5f5;">⚡ Crit ×: ${
+              <li style="padding:10px;border-radius:10px;background:#f5f5f5;color:#111;">⚡ Crit ×: ${
                 base.critMult
               }</li>
             </ul>
@@ -587,17 +643,13 @@ function renderCharacter() {
   `;
 
   document.getElementById("btnChangeAvatar")?.addEventListener("click", () => {
-    // Keep name and stats, just re-pick the hero
     window.location.hash = "#/avatar";
   });
 
   updateNewBattleLinkVisibility();
 }
 
-// -------------------------
-// **************---------- Settings page
-// ------------------------
-
+/* ------------------------- Settings page ------------------------ */
 function renderSettings() {
   const currentName = getPlayerName();
 
@@ -667,11 +719,10 @@ function renderSettings() {
     const newName = (input.value || "").trim();
     if (!isValidName(newName)) {
       error.textContent =
-        "Имя должно быть от 2х до 20 символов (буквы/цифры/пробел/дефис)";
+        "Name length should be 2–20 symbols (letters/numbers/space/hyphen).";
       input.focus();
       return;
     }
-    // Save name only; keep hero/avatar/stats intact
     localStorage.setItem(LS_KEYS.name, newName);
     nameValue.textContent = newName;
     closeEditor();
@@ -684,10 +735,7 @@ function renderSettings() {
   updateNewBattleLinkVisibility();
 }
 
-// -------------
-// ------------- Rendering Battle ---------------------------
-// ******************************************************
-
+/* ------------------------- Battle page ------------------------- */
 function renderBattle() {
   if (!currentBattle) {
     window.location.hash = "#/home";
@@ -705,7 +753,8 @@ function renderBattle() {
           <h2>Player:<br> ${getPlayerName() || "fighter"}${
     heroLabel ? ` · <small>${heroLabel}</small>` : ""
   }</h2>
-          <img class="avatar" src="${getPlayerAvatar()}" alt="${getPlayerName()}'s avatar" />
+          <img class="avatar" src="${getPlayerAvatar()}" alt="${getPlayerName()}'s avatar"
+               style="width:220px;height:auto;object-fit:contain"/>
           <div>HP: <progress id="hpPlayer" max="${player.hp}" value="${
     player.hpCurrent
   }"></progress> ${player.hpCurrent}/${player.hp}</div>
@@ -741,7 +790,8 @@ function renderBattle() {
           <h2>Enemy: <br> ${enemy.name}</h2>
           ${
             enemy.img
-              ? `<img class="avatar" src="${enemy.img}" alt="${enemy.name} avatar" />`
+              ? `<img class="avatar" src="${enemy.img}" alt="${enemy.name} avatar"
+               style="width:220px;height:auto;object-fit:contain"/>`
               : ""
           }
           <div>HP: <progress id="hpEnemy" max="${enemy.hp}" value="${
@@ -768,7 +818,7 @@ function renderBattle() {
     const atk = getSelectedAttack();
     const defs = getSelectedDefs();
     const ready = !!(atk && defs.length === 2);
-    setBtnEnabled(btnDo, ready); // visual + disabled state
+    setBtnEnabled(btnDo, ready);
   };
 
   document
@@ -793,7 +843,12 @@ function renderBattle() {
   });
 
   renderLogList();
-  if (player.hpCurrent === 0 || enemy.hpCurrent === 0) {
+
+  // if page reloaded right after KO, ensure modal shows only once
+  if (
+    !currentBattle.over &&
+    (player.hpCurrent === 0 || enemy.hpCurrent === 0)
+  ) {
     finishBattle(player.hpCurrent === 0 ? "LOSE" : "WIN");
   }
 
@@ -803,7 +858,7 @@ function renderBattle() {
 /* ===================== Routing ===================== */
 const ROUTES = {
   "/register": renderRegister,
-  "/home": renderHome, // Home is the main landing page
+  "/home": renderHome,
   "/character": renderCharacter,
   "/settings": renderSettings,
   "/battle": renderBattle,
@@ -823,27 +878,19 @@ function guard(path) {
   const hasName = !!getPlayerName();
   const hasAvatar = !!getPlayerAvatar();
 
-  // Home is always allowed and is the default landing
   if (path === "/" || path === "" || path === "/home") return "/home";
-
-  // No name yet → allow only Home and Register
-  if (!hasName) {
-    return path === "/register" ? "/register" : "/home";
-  }
-
-  // Has name but no avatar → allow Home, Register, Avatar; gate others
+  if (!hasName) return path === "/register" ? "/register" : "/home";
   if (hasName && !hasAvatar) {
     if (path === "/avatar" || path === "/register" || path === "/home")
       return path;
     return "/avatar";
   }
-
-  // Has both → proceed as requested
   return path;
 }
 
+/* LIMIT active highlighting to .nav-list a ONLY */
 function setActiveNav(path) {
-  document.querySelectorAll(".nav-bar a").forEach((a) => {
+  document.querySelectorAll(".nav-list a").forEach((a) => {
     const isActive = a.getAttribute("href") === `#${path}`;
     a.classList.toggle("active", isActive);
   });
@@ -864,7 +911,7 @@ function renderRoute() {
 }
 
 function renderNotFound() {
-  app().innerHTML = `<section><h1>404</h1><p>Страница не найдена</p></section>`;
+  app().innerHTML = `<section><h1>404</h1><p>Page not found</p></section>`;
   updateNewBattleLinkVisibility();
 }
 
@@ -872,8 +919,20 @@ function renderNotFound() {
 window.addEventListener("hashchange", renderRoute);
 window.addEventListener("DOMContentLoaded", () => {
   if (!document.getElementById("app")) {
-    console.error('Не найден <main id="app"> в index.html');
+    console.error('Missing <main id="app"> in index.html');
     return;
+  }
+
+  // Restore ongoing battle on load:
+  const restored = loadBattle();
+  if (restored) {
+    currentBattle = restored;
+    lastEnemyId = localStorage.getItem(LS_KEYS.lastEnemy) || null;
+
+    // if player exists and battle not finished — go straight to battle
+    if (getPlayerName() && getPlayerAvatar() && !currentBattle.over) {
+      window.location.hash = "#/battle";
+    }
   }
 
   // Navbar “New battle” → confirm → restart
@@ -883,7 +942,7 @@ window.addEventListener("DOMContentLoaded", () => {
       e.preventDefault();
       showConfirmModal({
         title: "Start a new battle?",
-        message: "Are you sure you want to start a new battle?",
+        message: "This will reset your current progress.",
         yesText: "Yes",
         cancelText: "Cancel",
         onYes: restartCycle,
