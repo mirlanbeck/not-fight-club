@@ -954,6 +954,8 @@ window.addEventListener("DOMContentLoaded", () => {
   updateNewBattleLinkVisibility();
 });
 
+//
+
 /* ===================== Validation ===================== */
 function isValidName(name) {
   return /^[\p{L}\d -]{2,20}$/u.test(name.trim());
